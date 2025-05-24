@@ -1,3 +1,12 @@
+ORIGINAL FILES + RAR WITH WHOLE MODULE UPDATED TO NON BG/ARENA FUNCTION AND 0 SPAM IN SERVER CONSOLE
+
+
+
+
+
+
+
+
 # ![logo](https://raw.githubusercontent.com/azerothcore/azerothcore.github.io/master/images/logo-github.png) AzerothCore
 
 # High Risk System Module
