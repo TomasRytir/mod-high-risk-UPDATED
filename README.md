@@ -1,5 +1,5 @@
 ORIGINAL FILES + RAR WITH WHOLE MODULE UPDATED TO NON BG/ARENA FUNCTION AND 0 SPAM IN SERVER CONSOLE
-
+If you want non BG/ARENA one without spam use only .rar file extract as module to build in cmake /whatever.
 
 
 
