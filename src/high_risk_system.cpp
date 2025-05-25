@@ -1,46 +1,33 @@
-/*
-*   Copyright (C) AstoriaCore 2021 | This piece of Code was customly coded by frytiks
-*   for the AstoriaCore Team and is fully ported over from TrinityCore to AzerothCore.
-*   It has multiple Bugfixes, Performance and Efficiency Updates! ~ Lushen 
-*/
-
-#include "Player.h"
-#include "Creature.h"
-#include "AccountMgr.h"
 #include "ScriptMgr.h"
-#include "Define.h"
-#include "Map.h"
-#include "Pet.h"
-#include "Item.h"
+#include "Player.h"
+#include "Config.h"
 #include "Chat.h"
+#include "GameObject.h"
+#include "Map.h"
+#include "Bag.h"
+#include "Item.h"
 
 #define SPELL_SICKNESS 15007
-#define GOB_CHEST 179697
+#define GOB_CHEST 179697 // Heavy Junkbox
 
-void ReskillCheck(Player* killer, Player* killed)
+// Helper funkce: vrací true, pokud gear smí dropnout
+bool CanDropLoot(Player* killer, Player* killed)
 {
-    // if killer have same ip as killed or if player kill self dont spawn chest
-    if (killer->GetSession()->GetRemoteAddress() == killed->GetSession()->GetRemoteAddress() || killer->GetGUID() == killed->GetGUID())
-        return;
-
-    // if killer is not a player dont drop
-    if (!killer->GetGUID().IsPlayer())
-        return;
-
-    // if player have sickness, dont drop loot
-    if (killed->HasAura(SPELL_SICKNESS))
-        return;
-
-    // if player is above 5 levels or more, dont drop loot
-    if (killer->GetLevel() - 5 >= killed->GetLevel())
-        return;
-
-    // if player is in sanctuary zone dont drop loot
-    AreaTableEntry const* area = sAreaTableStore.LookupEntry(killed->GetAreaId());
-    AreaTableEntry const* area2 = sAreaTableStore.LookupEntry(killer->GetAreaId());
-
-    if (area->IsSanctuary() || area2->IsSanctuary())
-        return;
+    // self-kill, stejné IP, sebevražda
+    if (!killer || !killed) return false;
+    if (killer->GetGUID() == killed->GetGUID()) return false;
+    if (killer->GetSession()->GetRemoteAddress() == killed->GetSession()->GetRemoteAddress()) return false;
+    // aura sickness nebo 5+ lvl rozdíl
+    if (killed->HasAura(SPELL_SICKNESS)) return false;
+    if (killer->GetLevel() - 5 >= killed->GetLevel()) return false;
+    // sanctuary
+    AreaTableEntry const* area1 = sAreaTableStore.LookupEntry(killer->GetAreaId());
+    AreaTableEntry const* area2 = sAreaTableStore.LookupEntry(killed->GetAreaId());
+    if ((area1 && area1->IsSanctuary()) || (area2 && area2->IsSanctuary())) return false;
+    // BG/arena ochrana na obou stranách
+    if (killer->InBattleground() || killer->InArena() || killed->InBattleground() || killed->InArena()) return false;
+    // všechno ok
+    return true;
 }
 
 class HighRiskSystem : public PlayerScript
@@ -48,143 +35,96 @@ class HighRiskSystem : public PlayerScript
 public:
     HighRiskSystem() : PlayerScript("HighRiskSystem") {}
 
-    void OnPVPKill(Player* killer, Player* killed)
+    void OnPlayerPVPKill(Player* killer, Player* killed) override
     {
-        if (!roll_chance_i(70))
+        // Early return: vůbec nevyhodnocuj v BG/aréně
+        if (killer->InBattleground() || killer->InArena() || killed->InBattleground() || killed->InArena())
             return;
 
-        ReskillCheck(killer, killed);
+        if (!CanDropLoot(killer, killed)) {
+            return;
+        }
 
-        if (!killed->IsAlive())
+        // Drop chance z configu
+        uint32 dropChance = sConfigMgr->GetOption<int>("HighRiskSystem.DropChance", 70);
+        if (!roll_chance_i(dropChance)) {
+//             printf("HighRiskSystem: Drop failed %u%% chance\n", dropChance);
+            return;
+        }
+
+        if (!killed->IsAlive()) // player už je mrtvý
         {
-            uint32 prev = 0;
-
+            uint32 maxItems = sConfigMgr->GetOption<int>("HighRiskSystem.MaxItems", 2);
             uint32 count = 0;
 
-            if (GameObject* go = killer->SummonGameObject(GOB_CHEST, killed->GetPositionX(), killed->GetPositionY(), killed->GetPositionZ(), killed->GetOrientation(), 0.0f, 0.0f, 0.0f, 0.0f, 300))
+            // spawn chesty
+            GameObject* go = killer->SummonGameObject(GOB_CHEST, killed->GetPositionX(), killed->GetPositionY(), killed->GetPositionZ(), killed->GetOrientation(), 0, 0, 0, 0, 300);
+            if (!go)
             {
-                killer->AddGameObject(go);
+//                 printf("HighRiskSystem: Chest spawn failed!\n");
+                return;
+            }
+            go->SetOwnerGUID(ObjectGuid::Empty);
+            go->loot.clear();
+            go->SetGoState(GO_STATE_READY);
+            go->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_NOT_SELECTABLE | GO_FLAG_IN_USE | GO_FLAG_DESTROYED | GO_FLAG_INTERACT_COND);
+            go->SetRespawnTime(300);
 
-                go->SetOwnerGUID(ObjectGuid::Empty);
-
-                for (int i = urand(0, 17); i < EQUIPMENT_SLOT_END; ++i)
-
-                    /* Equipment Set first */
-                    for (uint8 i = urand(0, 17); i < EQUIPMENT_SLOT_END; ++i)
-                    {
-                        if (count >= 2) // if there is 2 or more items stop for
-                            if (Item* pItem = killed->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
-                            {
-                                if (pItem->GetTemplate() && (!pItem->IsEquipped() || pItem->GetTemplate()->Quality < ITEM_QUALITY_UNCOMMON))
-                                    continue;
-
-                                uint8 slot = pItem->GetSlot();
-
-                                ChatHandler(killed->GetSession()).PSendSysMessage("|cffDA70D6You have lost your |cffffffff|Hitem:%d:0:0:0:0:0:0:0:0|h[%s]|h|r", pItem->GetEntry(), pItem->GetTemplate()->Name1.c_str());
-
-                                LootStoreItem storeItem = LootStoreItem(pItem->GetEntry(), 0, 100, 0, LOOT_MODE_DEFAULT, 0, 1, 1);
-
-                                go->loot.AddItem(storeItem);
-
-                                killed->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
-
-                                prev = i;
-
-                                count++;
-
-                                break;
-                            }
-                    }
-
-                for (uint8 i = urand(0, 17); i < EQUIPMENT_SLOT_END; ++i)
+            // --- EQUIPPED ITEMS ---
+            for (uint8 i = 0; i < EQUIPMENT_SLOT_END && count < maxItems; ++i)
+            {
+                if (Item* item = killed->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
                 {
-                    if (!roll_chance_i(70))
-                        break;
-
-                    if (Item* pItem = killed->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+                    if (item->GetTemplate()->Quality >= ITEM_QUALITY_UNCOMMON)
                     {
-                        if (pItem->GetTemplate() && (!pItem->IsEquipped() || pItem->GetTemplate()->Quality < ITEM_QUALITY_UNCOMMON))
-                            continue;
-
-                        if (prev == i)
-                            continue;
-
-                        uint8 slot = pItem->GetSlot();
-
-                        ChatHandler(killed->GetSession()).PSendSysMessage("|cffDA70D6You have lost your |cffffffff|Hitem:%d:0:0:0:0:0:0:0:0|h[%s]|h|r", pItem->GetEntry(), pItem->GetTemplate()->Name1.c_str());
-
-                        LootStoreItem storeItem = LootStoreItem(pItem->GetEntry(), 0, 100, 0, LOOT_MODE_DEFAULT, 0, 1, 1);
-
-                        go->loot.AddItem(storeItem);
-
-                        killed->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
-
-                        ChatHandler(killed->GetSession()).PSendSysMessage("|cffDA70D6You have lost your [%s]", pItem->GetTemplate()->Name1.c_str());
-
-                        prev = 0;
-
+                        std::string itemName = item->GetTemplate()->Name1;
+                        std::string msg = "|cffDA70D6You have lost your " + itemName;
+                        ChatHandler(killed->GetSession()).SendSysMessage(msg.c_str());
+                        go->loot.AddItem(LootStoreItem(item->GetEntry(), 0, 100, 0, LOOT_MODE_DEFAULT, 0, 1, 1));
+                        killed->DestroyItem(INVENTORY_SLOT_BAG_0, item->GetSlot(), true);
                         count++;
-
-                        break;
                     }
                 }
-
-                /* Main bag and bagpacks */
-                for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+            }
+            // --- INVENTORY ---
+            for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END && count < maxItems; ++i)
+            {
+                if (Item* item = killed->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
                 {
-                    if (Item* pItem = killed->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+                    if (item->GetTemplate()->Quality >= ITEM_QUALITY_UNCOMMON)
                     {
-                        if (count >= 2)
-                            break;
-
-                        if (pItem->GetTemplate() && pItem->GetTemplate()->Quality < ITEM_QUALITY_UNCOMMON)
-                            continue;
-
-                        ChatHandler(killed->GetSession()).PSendSysMessage("|cffDA70D6You have lost your |cffffffff|Hitem:%d:0:0:0:0:0:0:0:0|h[%s]|h|r", pItem->GetEntry(), pItem->GetTemplate()->Name1.c_str());
-
-                        LootStoreItem storeItem = LootStoreItem(pItem->GetEntry(), 0, 100, 0, LOOT_MODE_DEFAULT, 0, 1, 1);
-
-                        go->loot.AddItem(storeItem);
-
-                        killed->DestroyItemCount(pItem->GetEntry(), pItem->GetCount(), true, false);
-
+                        std::string itemName = item->GetTemplate()->Name1;
+                        std::string msg = "|cffDA70D6You have lost your " + itemName;
+                        ChatHandler(killed->GetSession()).SendSysMessage(msg.c_str());
+                        go->loot.AddItem(LootStoreItem(item->GetEntry(), 0, 100, 0, LOOT_MODE_DEFAULT, 0, 1, 1));
+                        killed->DestroyItemCount(item->GetEntry(), item->GetCount(), true, false);
                         count++;
-
-                        break;
                     }
                 }
-
-                //Other bags:
-                for (uint8 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
+            }
+            // --- BAGS ---
+            for (uint8 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END && count < maxItems; ++i)
+            {
+                if (Bag* bag = killed->GetBagByPos(i))
                 {
-                    if (Bag* bag = killed->GetBagByPos(i))
+                    for (uint32 j = 0; j < bag->GetBagSize() && count < maxItems; ++j)
                     {
-                        for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                        if (Item* item = killed->GetItemByPos(i, j))
                         {
-                            if (Item* pItem = killed->GetItemByPos(i, j))
+                            if (item->GetTemplate()->Quality >= ITEM_QUALITY_UNCOMMON)
                             {
-                                if (count >= 2)
-                                    break;
-
-                                if (pItem->GetTemplate() && pItem->GetTemplate()->Quality < ITEM_QUALITY_UNCOMMON)
-                                    continue;
-
-                                ChatHandler(killed->GetSession()).PSendSysMessage("|cffDA70D6You have lost your |cffffffff|Hitem:%d:0:0:0:0:0:0:0:0|h[%s]|h|r", pItem->GetEntry(), pItem->GetTemplate()->Name1.c_str());
-
-                                LootStoreItem storeItem = LootStoreItem(pItem->GetEntry(), 0, 100, 0, LOOT_MODE_DEFAULT, 0, 1, 1);
-
-                                go->loot.AddItem(storeItem);
-
-                                killed->DestroyItemCount(pItem->GetEntry(), pItem->GetCount(), true, false);
-
+                                std::string itemName = item->GetTemplate()->Name1;
+                                std::string msg = "|cffDA70D6You have lost your " + itemName;
+                                ChatHandler(killed->GetSession()).SendSysMessage(msg.c_str());
+                                go->loot.AddItem(LootStoreItem(item->GetEntry(), 0, 100, 0, LOOT_MODE_DEFAULT, 0, 1, 1));
+                                killed->DestroyItemCount(item->GetEntry(), item->GetCount(), true, false);
                                 count++;
-
-                                break;
                             }
                         }
                     }
                 }
             }
+//             printf("HighRiskSystem: Chest loot count: %zu\n", go->loot.items.size());
         }
     }
 };
