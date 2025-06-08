@@ -10,7 +10,7 @@
 #include <chrono>
 
 #define SPELL_SICKNESS 15007
-#define GOB_CHEST 179697 // Heavy Junkbox
+#define GOB_CHEST 2843 // Heavy Junkbox
 
 // Uchovává guid hráčů v BG/Arena (highrisk vypnut)
 std::unordered_set<uint32_t> highRiskDisabled;
@@ -18,6 +18,9 @@ std::unordered_set<uint32_t> highRiskDisabled;
 bool CanDropLoot(Player* killer, Player* killed)
 {
     if (!killer || !killed) return false;
+    // === TADY JE NOVÁ KONTROLA: Pokud je killer NEBO killed v BG/Areně, nedroppovat loot ===
+    if (killer->GetMap()->IsBattlegroundOrArena() || killed->GetMap()->IsBattlegroundOrArena())
+        return false;
     if (killer->GetGUID() == killed->GetGUID()) return false;
     if (killer->GetSession()->GetRemoteAddress() == killed->GetSession()->GetRemoteAddress()) return false;
     if (killed->HasAura(SPELL_SICKNESS)) return false;
@@ -71,7 +74,7 @@ public:
         if (!killed->IsAlive())
         {
             uint32 maxItems = sConfigMgr->GetOption<int>("HighRiskSystem.MaxItems", 2);
-            uint32 chestDespawnMs = sConfigMgr->GetOption<int>("HighRiskSystem.ChestDespawnMs", 30000);
+            uint32 chestDespawnMs = sConfigMgr->GetOption<int>("HighRiskSystem.ChestDespawnMs", 15000);
             uint32 count = 0;
 
             GameObject* go = killer->SummonGameObject(GOB_CHEST, killed->GetPositionX(), killed->GetPositionY(), killed->GetPositionZ(), killed->GetOrientation(), 0, 0, 0, 0, 0);
@@ -83,7 +86,10 @@ public:
             go->SetGoState(GO_STATE_READY);
             go->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_NOT_SELECTABLE | GO_FLAG_IN_USE | GO_FLAG_DESTROYED | GO_FLAG_INTERACT_COND);
             go->SetLootState(GO_READY);
-            go->DespawnOrUnsummon(std::chrono::milliseconds(chestDespawnMs));
+
+            // Debug
+            if (killer && killer->GetSession())
+                ChatHandler(killer->GetSession()).SendSysMessage("Debug: Chest despawn za X ms");
 
             // EQUIPPED ITEMS
             for (uint8 i = 0; i < EQUIPMENT_SLOT_END && count < maxItems; ++i)
@@ -141,6 +147,9 @@ public:
                     }
                 }
             }
+
+            // Despawn truhly po X ms (default 15s)
+            go->DespawnOrUnsummon(std::chrono::milliseconds(chestDespawnMs));
         }
     }
 };
@@ -149,3 +158,4 @@ void AddSC_HighRiskSystems()
 {
     new HighRiskSystem();
 }
+
